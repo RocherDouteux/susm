@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ U64_MOD = 2**64
 @dataclass(frozen=True)
 class Instruction:
     op: str
-    arg: int | None
+    arg: int | str | None
     line: int
 
 
@@ -35,7 +36,14 @@ OPS = {
     "impostor": "minus",
     "yap": "print",
     "yapc": "print_char",
+    "label": "label",
+    "sus": "jump",
+    "sussy": "jump_nonzero",
+    "dupe": "dup",
+    "swap": "swap",
 }
+
+LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class SusmError(Exception):
@@ -46,6 +54,12 @@ def to_i64(value: int) -> int:
     value %= U64_MOD
     if value > I64_MAX:
         return value - U64_MOD
+    return value
+
+
+def parse_label_name(value: str, line: int) -> str:
+    if LABEL_RE.fullmatch(value) is None:
+        raise SusmError(f"line {line}: invalid label name '{value}'")
     return value
 
 
@@ -72,6 +86,10 @@ def parse(source: str) -> list[Instruction]:
                 raise SusmError(f"line {line_number}: '{parts[1]}' is not a number") from exc
             if arg < I64_MIN or arg > I64_MAX:
                 raise SusmError(f"line {line_number}: '{parts[1]}' does not fit in signed 64 bits")
+        elif op in {"label", "jump", "jump_nonzero"}:
+            if len(parts) != 2:
+                raise SusmError(f"line {line_number}: {meme_op} expects exactly one label name")
+            arg = parse_label_name(parts[1], line_number)
         else:
             if len(parts) != 1:
                 raise SusmError(f"line {line_number}: {meme_op} does not take an argument")
@@ -82,6 +100,34 @@ def parse(source: str) -> list[Instruction]:
     return instructions
 
 
+def collect_labels(instructions: Iterable[Instruction]) -> dict[str, int]:
+    labels: dict[str, int] = {}
+
+    for index, instruction in enumerate(instructions):
+        if instruction.op != "label":
+            continue
+        assert isinstance(instruction.arg, str)
+        if instruction.arg in labels:
+            raise SusmError(f"line {instruction.line}: duplicate label '{instruction.arg}'")
+        labels[instruction.arg] = index
+
+    return labels
+
+
+def validate_labels(instructions: Iterable[Instruction]) -> dict[str, int]:
+    instructions = list(instructions)
+    labels = collect_labels(instructions)
+
+    for instruction in instructions:
+        if instruction.op not in {"jump", "jump_nonzero"}:
+            continue
+        assert isinstance(instruction.arg, str)
+        if instruction.arg not in labels:
+            raise SusmError(f"line {instruction.line}: unknown label '{instruction.arg}'")
+
+    return labels
+
+
 def pop_stack(stack: list[int], line: int) -> int:
     if not stack:
         raise SusmError(f"line {line}: stack underflow")
@@ -89,26 +135,54 @@ def pop_stack(stack: list[int], line: int) -> int:
 
 
 def execute(instructions: Iterable[Instruction]) -> list[int]:
+    instructions = list(instructions)
+    labels = validate_labels(instructions)
     stack: list[int] = []
+    pc = 0
 
-    for instruction in instructions:
+    while pc < len(instructions):
+        instruction = instructions[pc]
         if instruction.op == "push":
-            assert instruction.arg is not None
+            assert isinstance(instruction.arg, int)
             stack.append(instruction.arg)
+            pc += 1
         elif instruction.op == "pop":
             pop_stack(stack, instruction.line)
+            pc += 1
         elif instruction.op == "plus":
             right = pop_stack(stack, instruction.line)
             left = pop_stack(stack, instruction.line)
             stack.append(to_i64(left + right))
+            pc += 1
         elif instruction.op == "minus":
             right = pop_stack(stack, instruction.line)
             left = pop_stack(stack, instruction.line)
             stack.append(to_i64(left - right))
+            pc += 1
         elif instruction.op == "print":
             print(pop_stack(stack, instruction.line))
+            pc += 1
         elif instruction.op == "print_char":
             print(chr(pop_stack(stack, instruction.line) & 0xFF), end="", flush=True)
+            pc += 1
+        elif instruction.op == "label":
+            pc += 1
+        elif instruction.op == "jump":
+            assert isinstance(instruction.arg, str)
+            pc = labels[instruction.arg]
+        elif instruction.op == "jump_nonzero":
+            assert isinstance(instruction.arg, str)
+            value = pop_stack(stack, instruction.line)
+            pc = labels[instruction.arg] if value != 0 else pc + 1
+        elif instruction.op == "dup":
+            stack.append(pop_stack(stack, instruction.line))
+            stack.append(stack[-1])
+            pc += 1
+        elif instruction.op == "swap":
+            right = pop_stack(stack, instruction.line)
+            left = pop_stack(stack, instruction.line)
+            stack.extend([right, left])
+            pc += 1
         else:
             raise SusmError(f"line {instruction.line}: compiler bug for op '{instruction.op}'")
 
@@ -116,12 +190,26 @@ def execute(instructions: Iterable[Instruction]) -> list[int]:
 
 
 def validate_stack(instructions: Iterable[Instruction]) -> None:
+    instructions = list(instructions)
+    validate_labels(instructions)
     depth = 0
 
     for instruction in instructions:
-        if instruction.op == "push":
+        if instruction.op in {"push", "label", "jump"}:
+            if instruction.op == "push":
+                depth += 1
+        elif instruction.op == "dup":
+            if depth < 1:
+                raise SusmError(f"line {instruction.line}: stack underflow")
             depth += 1
+        elif instruction.op == "swap":
+            if depth < 2:
+                raise SusmError(f"line {instruction.line}: stack underflow")
         elif instruction.op in {"pop", "print", "print_char"}:
+            if depth < 1:
+                raise SusmError(f"line {instruction.line}: stack underflow")
+            depth -= 1
+        elif instruction.op == "jump_nonzero":
             if depth < 1:
                 raise SusmError(f"line {instruction.line}: stack underflow")
             depth -= 1
@@ -151,6 +239,10 @@ def emit_pop(lines: list[str], register: str) -> None:
     )
 
 
+def asm_label(name: str) -> str:
+    return f"susm_label_{name}"
+
+
 def compile_to_x86_64_elf_asm(instructions: Iterable[Instruction]) -> str:
     instructions = list(instructions)
     validate_stack(instructions)
@@ -169,7 +261,7 @@ def compile_to_x86_64_elf_asm(instructions: Iterable[Instruction]) -> str:
     for instruction in instructions:
         lines.append(f"    ; susm line {instruction.line}")
         if instruction.op == "push":
-            assert instruction.arg is not None
+            assert isinstance(instruction.arg, int)
             lines.extend(
                 [
                     f"    mov rax, {instruction.arg}",
@@ -203,6 +295,33 @@ def compile_to_x86_64_elf_asm(instructions: Iterable[Instruction]) -> str:
                     "    syscall",
                 ]
             )
+        elif instruction.op == "label":
+            assert isinstance(instruction.arg, str)
+            lines.append(f"{asm_label(instruction.arg)}:")
+        elif instruction.op == "jump":
+            assert isinstance(instruction.arg, str)
+            lines.append(f"    jmp {asm_label(instruction.arg)}")
+        elif instruction.op == "jump_nonzero":
+            assert isinstance(instruction.arg, str)
+            emit_pop(lines, "rax")
+            lines.extend(
+                [
+                    "    test rax, rax",
+                    f"    jnz {asm_label(instruction.arg)}",
+                ]
+            )
+        elif instruction.op == "dup":
+            lines.extend(
+                [
+                    "    mov rax, [r15 - 8]",
+                ]
+            )
+            emit_push(lines)
+        elif instruction.op == "swap":
+            emit_pop(lines, "rax")
+            emit_pop(lines, "rbx")
+            emit_push(lines, "rax")
+            emit_push(lines, "rbx")
         else:
             raise SusmError(f"line {instruction.line}: compiler bug for op '{instruction.op}'")
         lines.append("")
@@ -280,7 +399,7 @@ def compile_to_x86_64_pe_asm(instructions: Iterable[Instruction]) -> str:
     for instruction in instructions:
         lines.append(f"    ; susm line {instruction.line}")
         if instruction.op == "push":
-            assert instruction.arg is not None
+            assert isinstance(instruction.arg, int)
             lines.append(f"    mov rax, {instruction.arg}")
             emit_push(lines)
         elif instruction.op == "pop":
@@ -312,6 +431,29 @@ def compile_to_x86_64_pe_asm(instructions: Iterable[Instruction]) -> str:
                     "    call printf",
                 ]
             )
+        elif instruction.op == "label":
+            assert isinstance(instruction.arg, str)
+            lines.append(f"{asm_label(instruction.arg)}:")
+        elif instruction.op == "jump":
+            assert isinstance(instruction.arg, str)
+            lines.append(f"    jmp {asm_label(instruction.arg)}")
+        elif instruction.op == "jump_nonzero":
+            assert isinstance(instruction.arg, str)
+            emit_pop(lines, "rax")
+            lines.extend(
+                [
+                    "    test rax, rax",
+                    f"    jnz {asm_label(instruction.arg)}",
+                ]
+            )
+        elif instruction.op == "dup":
+            lines.append("    mov rax, [r15 - 8]")
+            emit_push(lines)
+        elif instruction.op == "swap":
+            emit_pop(lines, "rax")
+            emit_pop(lines, "rbx")
+            emit_push(lines, "rax")
+            emit_push(lines, "rbx")
         else:
             raise SusmError(f"line {instruction.line}: compiler bug for op '{instruction.op}'")
         lines.append("")

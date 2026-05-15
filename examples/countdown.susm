@@ -1,0 +1,11 @@
+# prints 3, 2, 1
+vent 3
+
+label loop
+dupe
+yap
+vent 1
+impostor
+dupe
+sussy loop
+eject

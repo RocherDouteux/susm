@@ -14,6 +14,11 @@ Read [DICTIONARY.md](DICTIONARY.md) for the language reference.
 | `impostor` | pop two values, subtract right from left, push the result |
 | `yap` | pop and print the top value |
 | `yapc` | pop and print the low byte as an ASCII character |
+| `label <name>` | define a jump target |
+| `sus <name>` | jump to a label |
+| `sussy <name>` | pop and jump to a label if the value is not zero |
+| `dupe` | duplicate the top value |
+| `swap` | swap the top two values |
 
 Lines can include comments after `#`.
 
@@ -24,6 +29,7 @@ Values are signed 64-bit integers, matching the current x86-64 compiler target.
 ```powershell
 python susm.py run examples/first.susm
 python susm.py run examples/chars.susm
+python susm.py run examples/countdown.susm
 python susm.py run examples/first.susm --show-stack
 python susm.py compile examples/first.susm
 python susm.py check

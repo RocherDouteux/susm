@@ -52,6 +52,13 @@ means the instruction pops `b`, then pops `a`, then pushes `c`.
 | `impostor` | `a b -- result` | Subtract `a - b` and push the result. |
 | `yap` | `value --` | Print the top value as a decimal integer, followed by a newline. |
 | `yapc` | `value --` | Print the low byte of the top value as an ASCII character. |
+| `label <name>` | `--` | Define a jump target. |
+| `sus <name>` | `--` | Jump to a label. |
+| `sussy <name>` | `value --` | Jump to a label if `value` is not zero. |
+| `dupe` | `value -- value value` | Duplicate the top value. |
+| `swap` | `a b -- b a` | Swap the top two values. |
+
+Label names must start with a letter or `_`, then use only letters, numbers, and `_`.
 
 ## Examples
 
@@ -119,6 +126,29 @@ Output:
 9
 ```
 
+Loop with `label`, `dupe`, and `sussy`:
+
+```susm
+vent 3
+
+label loop
+dupe
+yap
+vent 1
+impostor
+dupe
+sussy loop
+eject
+```
+
+Output:
+
+```text
+3
+2
+1
+```
+
 ## Common Errors
 
 Stack underflow happens when an instruction needs a value that is not on the stack:
@@ -131,6 +161,12 @@ Unknown instructions are rejected:
 
 ```susm
 sus
+```
+
+Jumping to a missing label is rejected:
+
+```susm
+sus nowhere
 ```
 
 Numbers must fit in signed 64 bits:
